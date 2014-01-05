@@ -1,9 +1,26 @@
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseNotFound, HttpResponseNotAllowed
 import gripcontrol
 import smartfeed
+import smartfeed.django
 
-def items(req, feed_id):
+def items(req, **kwargs):
 	if req.method == 'GET':
+		mapper_class = kwargs.get('mapper_class')
+		if mapper_class:
+			mapper = smartfeed.django.get_class(mapper_class)
+		else:
+			mapper = smartfeed.django.get_default_mapper()
+
+		model_class = kwargs.get('model_class')
+		if not model_class:
+			model_class = mapper.get_model_class(req, kwargs)
+		if model_class:
+			model = smartfeed.django.get_class(model_class)
+		else:
+			model = smartfeed.django.get_default_model()
+
+		feed_id = mapper.get_feed_id(req, kwargs)
+
 		max_count = req.GET.get('max')
 		if max_count:
 			try:
@@ -30,31 +47,39 @@ def items(req, feed_id):
 			except ValueError as e:
 				return HttpResponseBadRequest('Bad Request: Invalid until value: %s\n')
 
-		format = 'json'
+		rformat = 'json'
 		accept = req.META.get('HTTP_ACCEPT')
 		if accept:
 			try:
-				format = smartfeed.get_accept_format(accept)
+				rformat = smartfeed.get_accept_format(accept)
 			except:
 				pass
 
 		try:
-			result = smartfeed.django.get_model().get_items(feed_id, since, until, max_count)
-		except smartfeed.FeedDoesNotExist:
-			return HttpResponseNotFound('Not Found: No such feed\n')
+			result = model.get_items(feed_id, since, until, max_count)
+		except NotImplementedError as e:
+			return HttpResponse('Not Implemented: %s\n' % e.message, status=501)
+		except smartfeed.UnsupportedSpecError as e:
+			return HttpResponseBadRequest('Bad Request: %s' % e.message)
+		except smartfeed.InvalidSpecError:
+			return HttpResponseBadRequest('Bad Request: Invalid spec\n')
+		except smartfeed.SpecMismatchError as e:
+			return HttpResponseBadRequest('Bad Request: %s' % e.message)
+		except smartfeed.FeedDoesNotExist as e:
+			return HttpResponseNotFound('Not Found: %s\n' % e.message)
 		except smartfeed.ItemDoesNotExist as e:
 			return HttpResponseNotFound('Not Found: %s\n' % e.message)
 
 		if not since or len(result.items) > 0:
-			content_type, body = smartfeed.create_items_body(format, result.items, total=result.total, last_cursor=result.last_cursor)
+			content_type, body = smartfeed.create_items_body(rformat, result.items, total=result.total, last_cursor=result.last_cursor, formatter=smartfeed.django.get_default_formatter())
 			return HttpResponse(body, content_type=content_type)
 
 		if not smartfeed.django.check_grip_sig(req):
 			return HttpResponse('Error: Realtime endpoint not supported. Set up Pushpin or Fanout.io\n', status=501)
 
-		channel = gripcontrol.Channel(smartfeed.django.get_grip_prefix() + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(format), result.last_cursor)
+		channel = gripcontrol.Channel(smartfeed.django.get_grip_prefix() + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(rformat), result.last_cursor)
 		theaders = dict()
-		content_type, tbody = smartfeed.create_items_body(format, [], last_cursor=result.last_cursor)
+		content_type, tbody = smartfeed.create_items_body(rformat, [], last_cursor=result.last_cursor)
 		theaders['Content-Type'] = content_type
 		tresponse = gripcontrol.Response(headers=theaders, body=tbody)
 		instruct = gripcontrol.create_hold_response(channel, tresponse)
@@ -62,6 +87,6 @@ def items(req, feed_id):
 	else:
 		return HttpResponseNotAllowed(['GET'])
 
-def subscriptions(req, feed_id):
+def subscriptions(req, **kwargs):
 	# TODO
-	return HttpResponse('Not Implemented\n', status=501)
+	return HttpResponse('Not Implemented: %s\n' % 'Persistent subscriptions not implemented', status=501)

@@ -1,28 +1,86 @@
 import threading
+import importlib
 from django.conf import settings
 import smartfeed
 
 tlocal = threading.local()
 
-def get_publisher():
-	if not hasattr(tlocal, 'publisher'):
-		# FIXME: parse settings to create pcs
-		tlocal.publisher = smartfeed.EpcpPublisher(pub_control_set=pcs)
-	return tlocal.publisher
+def load_class(name):
+	at = name.rfind('.')
+	if at == -1:
+		raise ValueError('class name contains no \'.\'')
+	module_name = name[0:at]
+	class_name = name[at + 1:]
+	return getattr(importlib.import_module(module_name), class_name)()
 
-def get_model():
-	if not hasattr(tlocal, 'model'):
-		# FIXME: parse settings and pass redis_* fields
-		tlocal.model = smartfeed.RedisQueueModel(publisher=get_publisher())
-	return tlocal.model
+# load and keep in thread local storage
+def get_class(name):
+	if not hasattr(tlocal, 'loaded'):
+		tlocal.loaded = dict()
+	c = tlocal.loaded.get(name)
+	if c is None:
+		c = load_class(name)
+		tlocal.loaded[name] = c
+	return c
+
+def get_class_from_setting(setting_name, default=None):
+	if hasattr(settings, setting_name):
+		return get_class(getattr(settings, setting_name))
+	elif default:
+		return get_class(default)
+	else:
+		raise ValueError('%s not specified, and default not provided' % setting_name)
+
+class Mapper(object):
+	def get_model_class(self, request, params):
+		return None
+
+	def get_feed_id(self, request, params):
+		raise NotImplementedError()
+
+class DefaultMapper(Mapper):
+	def get_feed_id(self, request, params):
+		base = params['base']
+		order = request.GET.get('order')
+		if order is None:
+			order = 'created'
+		return smartfeed.encode_id_part(base) + '-' + smartfeed.encode_id_part(order)
+
+class EpcpPublisher(smartfeed.EpcpPublisher):
+	def __init__(self):
+		pcs = smartfeed.PubControlSet()
+		if hasattr(settings, 'GRIP_PROXIES'):
+			pcs.apply_config(settings.GRIP_PROXIES)
+		super(EpcpPublisher, self).__init__(pcs, formatter=get_default_formatter())
+
+class RedisModel(smartfeed.RedisModel):
+	def __init__(self):
+		host = getattr(settings, 'REDIS_HOST', 'localhost')
+		port = getattr(settings, 'REDIS_PORT', 6379)
+		db = getattr(settings, 'REDIS_DB', 0)
+		super(RedisModel, self).__init__(host=host, port=port, db=db, prefix=get_redis_prefix(), publisher=get_default_publisher())
+
+def get_default_mapper():
+	return get_class_from_setting('SMARTFEED_MAPPER_CLASS', 'smartfeed.django.DefaultMapper')
+
+def get_default_formatter():
+	return get_class_from_setting('SMARTFEED_FORMATTER_CLASS', 'smartfeed.DefaultFormatter')
+
+def get_default_publisher():
+	return get_class_from_setting('SMARTFEED_PUBLISHER_CLASS', 'smartfeed.django.EpcpPublisher')
+
+def get_default_model():
+	return get_class_from_setting('SMARTFEED_MODEL_CLASS')
+
+def get_redis_prefix():
+	return getattr(settings, 'SMARTFEED_REDIS_PREFIX', 'smartfeed-')
 
 def get_grip_prefix():
-	if hasattr(settings, 'SMARTFEED_GRIP_PREFIX'):
-		return settings.SMARTFEED_GRIP_PREFIX
-	else:
-		return 'smartfeed-'
+	return getattr(settings, 'SMARTFEED_GRIP_PREFIX', 'smartfeed-')
 
 def check_grip_sig(request):
+	if not hasattr(settings, 'GRIP_PROXIES'):
+		return False
 	grip_sig = request.META.get('HTTP_GRIP_SIG')
 	if not grip_sig:
 		return False
