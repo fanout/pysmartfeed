@@ -4,6 +4,7 @@ import calendar
 import json
 import uuid
 from binascii import crc32
+import atexit
 import redis
 import pubcontrol
 import gripcontrol
@@ -118,6 +119,7 @@ class ItemsResult(object):
 class PubControlSet(object):
 	def __init__(self):
 		self.pubs = list()
+		atexit.register(self._finish)
 
 	def clear(self):
 		self.pubs = list()
@@ -139,6 +141,10 @@ class PubControlSet(object):
 	def publish(self, channel, item):
 		for pub in self.pubs:
 			pub.publish_async(channel, item)
+
+	def _finish(self):
+		for pub in self.pubs:
+			pub.finish()
 
 class Formatter(object):
 	def is_supported(self, format):
@@ -242,11 +248,11 @@ class EpcpPublisher(Publisher):
 			#hrq_body =
 			#xs_content =
 		elif item_format == 'json':
-			content_type, hr_body = create_items_body(item_format, [item], total=total, prev_cursor=prev_cursor, last_cursor=cursor, formatter=self.formatter)
+			content_type, hr_body = create_items_body(item_format, [item], total=total, last_cursor=cursor, formatter=self.formatter)
 			hr_headers['Content-Type'] = content_type
 			# TODO: other epcp formats
 			#hs_content =
-			#hrq_body =
+			x, hrq_body = create_items_body(item_format, [item], total=total, prev_cursor=prev_cursor, last_cursor=cursor, formatter=self.formatter)
 			#xs_content =
 
 		pub_formats = list()

@@ -51,7 +51,7 @@ class EpcpPublisher(smartfeed.EpcpPublisher):
 		pcs = smartfeed.PubControlSet()
 		if hasattr(settings, 'GRIP_PROXIES'):
 			pcs.apply_config(settings.GRIP_PROXIES)
-		super(EpcpPublisher, self).__init__(pcs, formatter=get_default_formatter())
+		super(EpcpPublisher, self).__init__(pcs, prefix=get_grip_prefix(), formatter=get_default_formatter())
 
 class RedisModel(smartfeed.RedisModel):
 	def __init__(self):
