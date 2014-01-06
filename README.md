@@ -96,6 +96,17 @@ The `Model` interface operates at the feed level, not the data source level. If 
 
 While this library includes a convenient model for Redis, it has been designed so that a model implementation could be backed by any kind of database, including SQL.
 
+Position Specs
+--------------
+
+It's up to the model implementation to support whatever position specs it needs. The `RedisModel` class supports the ones defined in the Smart Feeds specification, namely `id`, `time`, and `cursor`. This allows fetching ranges of items bounded by item ids, ISO timestamps, or opaque cursor values.
+
+For example, a query for all items with created time equal to or later than January 6th, 2014 at noon could look like this:
+
+```
+curl http://localhost:8000/myfeed/items/?since=time:2014-01-06T12:00:00
+```
+
 Realtime
 --------
 
