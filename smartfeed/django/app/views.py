@@ -87,6 +87,36 @@ def items(req, **kwargs):
 	else:
 		return HttpResponseNotAllowed(['GET'])
 
+def stream(req, **kwargs):
+	if req.method == 'GET':
+		mapper_class = kwargs.get('mapper_class')
+		if mapper_class:
+			mapper = smartfeed.django.get_class(mapper_class)
+		else:
+			mapper = smartfeed.django.get_default_mapper()
+
+		feed_id = mapper.get_feed_id(req, kwargs)
+
+		rformat = 'json'
+		accept = req.META.get('HTTP_ACCEPT')
+		if accept:
+			try:
+				rformat = smartfeed.get_accept_format(accept)
+			except:
+				pass
+
+		if not smartfeed.django.check_grip_sig(req):
+			return HttpResponse('Error: Realtime endpoint not supported. Set up Pushpin or Fanout.io\n', status=501)
+
+		channel = gripcontrol.Channel(smartfeed.django.get_grip_prefix() + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(rformat))
+		iheaders = dict()
+		iheaders['Content-Type'] = 'text/plain'
+		iresponse = gripcontrol.Response(headers=iheaders)
+		instruct = gripcontrol.create_hold_stream(channel, iresponse)
+		return HttpResponse(instruct, content_type='application/grip-instruct')
+	else:
+		return HttpResponseNotAllowed(['GET'])
+
 def subscriptions(req, **kwargs):
 	# TODO
 	return HttpResponse('Not Implemented: %s\n' % 'Persistent subscriptions not implemented', status=501)

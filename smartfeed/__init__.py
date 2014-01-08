@@ -3,6 +3,7 @@ from datetime import datetime
 import calendar
 import json
 import uuid
+from base64 import b64encode
 from binascii import crc32
 import atexit
 import redis
@@ -129,6 +130,14 @@ class PubControlSet(object):
 
 	def apply_config(self, config):
 		for entry in config:
+			pub = pubcontrol.PubControl(entry['uri'])
+			if 'iss' in entry:
+				pub.set_auth_jwt({'iss': entry['iss']}, entry['key'])
+
+			self.pubs.append(pub)
+
+	def apply_grip_config(self, config):
+		for entry in config:
 			if 'control_uri' not in entry:
 				continue
 
@@ -145,6 +154,29 @@ class PubControlSet(object):
 	def _finish(self):
 		for pub in self.pubs:
 			pub.finish()
+
+class HttpRequestFormat(pubcontrol.Format):
+	def __init__(self, method=None, headers=None, body=None):
+		self.method = method
+		self.headers = headers
+		self.body = body
+
+	def name(self):
+		return 'http-request'
+
+	def export(self):
+		out = dict()
+		if self.method:
+			out['method'] = self.method
+		if self.headers:
+			out['headers'] = self.headers
+		if self.body:
+			is_text, val = gripcontrol._bin_or_text(self.body)
+			if is_text:
+				out['body'] = val
+			else:
+				out['body-bin'] = b64encode(val)
+		return out
 
 class Formatter(object):
 	def is_supported(self, format):
@@ -238,9 +270,8 @@ class EpcpPublisher(Publisher):
 				self._publish(feed_id, item, iformat, total, cursor, prev_cursor)
 
 	def _make_item(self, item, item_format, total, cursor, prev_cursor):
-		hr_headers = dict()
-
 		if item_format == 'atom':
+			hr_headers = dict()
 			hr_headers['Content-Type'] = 'application/atom+xml'
 			# TODO: atom format
 			#hr_body =
@@ -249,15 +280,33 @@ class EpcpPublisher(Publisher):
 			#xs_content =
 		elif item_format == 'json':
 			content_type, hr_body = create_items_body(item_format, [item], total=total, last_cursor=cursor, formatter=self.formatter)
+			hr_headers = dict()
 			hr_headers['Content-Type'] = content_type
-			# TODO: other epcp formats
-			#hs_content =
-			x, hrq_body = create_items_body(item_format, [item], total=total, prev_cursor=prev_cursor, last_cursor=cursor, formatter=self.formatter)
+
+			hs_content = dict()
+			if total is not None:
+				hs_content['total'] = total
+			if prev_cursor is not None:
+				hs_content['prev_cursor'] = prev_cursor
+			if cursor is not None:
+				hs_content['cursor'] = cursor
+			if self.formatter:
+				hs_content['item'] = self.formatter.to_format(item, item_format)
+			else:
+				hs_content['item'] = item # assume json ready
+			hs_content = json.dumps(hs_content) + '\n'
+
+			content_type, hrq_body = create_items_body(item_format, [item], total=total, prev_cursor=prev_cursor, last_cursor=cursor, formatter=self.formatter)
+			hrq_headers = dict()
+			hrq_headers['Content-Type'] = content_type
+
+			# TODO: support xmpp-stanza type
 			#xs_content =
 
 		pub_formats = list()
 		pub_formats.append(gripcontrol.HttpResponseFormat(headers=hr_headers, body=hr_body))
-		#pub_formats.append(gripcontrol.HttpStreamFormat(hs_content))
+		pub_formats.append(gripcontrol.HttpStreamFormat(hs_content))
+		pub_formats.append(HttpRequestFormat(method='POST', headers=hrq_headers, body=hrq_body))
 
 		return pubcontrol.Item(pub_formats, cursor, prev_cursor)
 

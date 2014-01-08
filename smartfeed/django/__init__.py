@@ -49,8 +49,10 @@ class DefaultMapper(Mapper):
 class EpcpPublisher(smartfeed.EpcpPublisher):
 	def __init__(self):
 		pcs = smartfeed.PubControlSet()
+		if hasattr(settings, 'PUBLISH_SERVERS'):
+			pcs.apply_config(settings.PUBLISH_SERVERS)
 		if hasattr(settings, 'GRIP_PROXIES'):
-			pcs.apply_config(settings.GRIP_PROXIES)
+			pcs.apply_grip_config(settings.GRIP_PROXIES)
 		super(EpcpPublisher, self).__init__(pcs, prefix=get_grip_prefix(), formatter=get_default_formatter())
 
 class RedisModel(smartfeed.RedisModel):
