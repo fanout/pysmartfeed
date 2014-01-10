@@ -425,7 +425,14 @@ class RedisModel(Model):
 	def get_items(self, feed_id, since_spec, until_spec, max_count):
 		parts = feed_id.split('-')
 		base = decode_id_part(parts[0])
-		index = decode_id_part(parts[1])
+		order = decode_id_part(parts[1])
+
+		if order.startswith('-'):
+			asc = False
+			index = order[1:]
+		else:
+			asc = True
+			index = order
 
 		if since_spec and since_spec.type not in ('id', 'time', 'cursor'):
 			raise UnsupportedSpecError('Position spec not supported: %s' % since_spec.type)
@@ -453,10 +460,14 @@ class RedisModel(Model):
 					# this is a loop so we can fallback from cursor to time
 					retry = False
 					while True:
-						smin = since_ts if since_spec else '-inf'
-						smax = until_ts if until_spec else '+inf'
-
-						refs = pipe.zrangebyscore(key_index, smin, smax, start=0, num=max_count, withscores=True)
+						if asc:
+							smin = since_ts if since_spec else '-inf'
+							smax = until_ts if until_spec else '+inf'
+							refs = pipe.zrangebyscore(key_index, smin, smax, start=0, num=max_count, withscores=True)
+						else:
+							smax = since_ts if since_spec else '+inf'
+							smin = until_ts if until_spec else '-inf'
+							refs = pipe.zrevrangebyscore(key_index, smax, smin, start=0, num=max_count, withscores=True)
 
 						tmp = list()
 						for ref in refs:
@@ -516,33 +527,36 @@ class RedisModel(Model):
 
 					if end - start <= 0:
 						out = ItemsResult()
-						if since_spec:
-							if since_spec.type == 'id':
-								# if we got this far on an id spec, then the original item is just previous
-								assert(start > 0)
-								out.last_cursor = make_toc_cursor(since_ts, start - 1, self._get_ids(refs[:start]))
-							elif since_spec.type == 'time':
-								if since_ts > 0:
-									# search for the first item before this time
-									refs = pipe.zrevrangebyscore(key_index, since_ts - 1, '-inf', start=0, num=1, withscores=True)
-									if refs:
-										# now fetch all items within this timestamp and return a cursor for the last one
-										ts = refs[0][1]
-										item_ids = pipe.zrangebyscore(key_index, ts, ts)
-										if not refs:
-											# inconsistent, retry
-											continue
-										out.last_cursor = make_toc_cursor(ts, len(item_ids) - 1, item_ids)
+						# if no items and reading an ascending feed, then provide a cursor.
+						# no items on a descending feed means the end was reached.
+						if asc:
+							if since_spec:
+								if since_spec.type == 'id':
+									# if we got this far on an id spec, then the original item is just previous
+									assert(start > 0)
+									out.last_cursor = make_toc_cursor(since_ts, start - 1, self._get_ids(refs[:start]))
+								elif since_spec.type == 'time':
+									if since_ts > 0:
+										# search for the first item before this time
+										refs = pipe.zrevrangebyscore(key_index, since_ts - 1, '-inf', start=0, num=1, withscores=True)
+										if refs:
+											# now fetch all items within this timestamp and return a cursor for the last one
+											ts = refs[0][1]
+											item_ids = pipe.zrangebyscore(key_index, ts, ts)
+											if not refs:
+												# inconsistent, retry
+												continue
+											out.last_cursor = make_toc_cursor(ts, len(item_ids) - 1, item_ids)
+										else:
+											out.last_cursor = ''
 									else:
 										out.last_cursor = ''
-								else:
-									out.last_cursor = ''
-							else: # cursor
-								# just echo back the input. note that in a cursor->time fallback, this value
-								#   will still contain the original cursor value
-								out.last_cursor = since_spec.value
-						else:
-							out.last_cursor = ''
+								else: # cursor
+									# just echo back the input. note that in a cursor->time fallback, this value
+									#   will still contain the original cursor value
+									out.last_cursor = since_spec.value
+							else:
+								out.last_cursor = ''
 						return out
 
 					pipe.multi()

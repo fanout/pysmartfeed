@@ -70,7 +70,7 @@ def items(req, **kwargs):
 		except smartfeed.ItemDoesNotExist as e:
 			return HttpResponseNotFound('Not Found: %s\n' % e.message)
 
-		if not since or len(result.items) > 0:
+		if result.last_cursor is None or not since or len(result.items) > 0:
 			content_type, body = smartfeed.create_items_body(rformat, result.items, total=result.total, last_cursor=result.last_cursor, formatter=smartfeed.django.get_default_formatter())
 			return HttpResponse(body, content_type=content_type)
 
