@@ -467,7 +467,7 @@ class RedisModel(Model):
 						else:
 							smax = since_ts if since_spec else '+inf'
 							smin = until_ts if until_spec else '-inf'
-							refs = pipe.zrevrangebyscore(key_index, smax, smin, start=0, num=max_count, withscores=True)
+							refs = pipe.zrevrangebyscore(key_index, smax, smin, start=0, num=max_count + 1, withscores=True)
 
 						tmp = list()
 						for ref in refs:
@@ -525,6 +525,20 @@ class RedisModel(Model):
 					if retry:
 						continue
 
+					if not asc:
+						more = False
+						# if descending, we attempt to read one extra. did that work out?
+						if len(refs) > max_count:
+							more = True
+						elif until_spec:
+							# check and see if there's more after this timestamp
+							tmprefs = pipe.zrevrangebyscore(key_index, smin - 1, '-inf', start=0, num=1)
+							if len(tmprefs) > 0:
+								more = True
+						# now trim so we stay under the max
+						if end - start > max_count:
+							end = start + max_count
+
 					if end - start <= 0:
 						out = ItemsResult()
 						# if no items and reading an ascending feed, then provide a cursor.
@@ -575,9 +589,11 @@ class RedisModel(Model):
 					if retry:
 						continue
 
-					at = self._ref_rfind_first_score(refs, refs[end - 1][1])
-					assert(at != -1)
-					out.last_cursor = make_toc_cursor(refs[at][1], end - at - 1, self._get_ids(refs[at:end]))
+					if asc or more:
+						at = self._ref_rfind_first_score(refs, refs[end - 1][1])
+						assert(at != -1)
+						out.last_cursor = make_toc_cursor(refs[at][1], end - at - 1, self._get_ids(refs[at:end]))
+
 					return out
 				except redis.WatchError:
 					continue
