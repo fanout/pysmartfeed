@@ -369,7 +369,7 @@ class RedisModel(Model):
 				raise ValueError('bad cursor format')
 			return (ts, offset, cs)
 
-	def _item_serialize(self, item):
+	def _item_to_structured(self, item):
 		out = dict()
 		out['data'] = item.data
 		meta = dict()
@@ -379,10 +379,9 @@ class RedisModel(Model):
 		if item.deleted:
 			meta['deleted'] = True
 		out['meta'] = meta
-		return json.dumps(out)
+		return out
 
-	def _item_deserialize(self, data):
-		data = json.loads(data)
+	def _item_from_structured(self, data):
 		item = Item()
 		item.data = data['data']
 		meta = data['meta']
@@ -392,6 +391,12 @@ class RedisModel(Model):
 		if meta.get('deleted'):
 			item.deleted = True
 		return item
+
+	def _item_serialize(self, item):
+		return json.dumps(self._item_to_structured(item))
+
+	def _item_deserialize(self, data):
+		return self._item_from_structured(json.loads(data))
 
 	def _ref_find(self, refs, id, score):
 		for n, i in enumerate(refs):
@@ -421,6 +426,85 @@ class RedisModel(Model):
 		for i in refs:
 			out.append(i[0])
 		return out
+
+	def _rewrite_notify_props(self, base, notify_props):
+		enc_base = encode_id_part(base)
+		key_notify_items = '%s%s-notify-items' % (self.prefix, enc_base)
+		while True:
+			with self.redis.pipeline() as pipe:
+				try:
+					pipe.watch(key_notify_items)
+					if not pipe.hexists(key_notify_items, notify_props['id']):
+						# seems our item is gone. oh well
+						return False
+					pipe.multi()
+					pipe.hset(key_notify_items, notify_props['id'], json.dumps(notify_props))
+					pipe.execute()
+					return True
+				except redis.WatchError:
+					continue
+
+	def _process_notify(self, base):
+		enc_base = encode_id_part(base)
+		key_notify = '%s%s-notify' % (self.prefix, enc_base)
+		key_notify_items = '%s%s-notify-items' % (self.prefix, enc_base)
+		key_lastpub_created = '%s%s-lastpub-created' % (self.prefix, enc_base)
+		key_lastpub_modified = '%s%s-lastpub-modified' % (self.prefix, enc_base)
+		while True:
+			with self.redis.pipeline() as pipe:
+				try:
+					pipe.watch(key_notify)
+					pipe.watch(key_notify_items)
+					pipe.watch(key_lastpub_created)
+					pipe.watch(key_lastpub_modified)
+
+					now = calendar.timegm(datetime.utcnow().utctimetuple())
+
+					id = pipe.lindex(key_notify, 0)
+					if not id:
+						# nothing to do
+						return
+
+					notify_props = pipe.hget(key_notify_items, id)
+					if not notify_props:
+						# nothing to do
+						return
+
+					notify_props = json.loads(notify_props)
+					if notify_props['state'] == 'initializing':
+						if notify_props['created'] + 60 > now:
+							# hopefully someone else will be taking care of this soon
+							return
+
+						# otherwise, eat the stale item and start over
+						pipe.multi()
+						pipe.lpop(key_notify)
+						pipe.execute()
+						continue
+
+					if 'cursor_created' in notify_props:
+						lastpub_created = pipe.get(key_lastpub_created)
+					if 'cursor_modified' in notify_props:
+						lastpub_modified = pipe.get(key_lastpub_modified)
+
+					pipe.multi()
+					pipe.lpop(key_notify)
+					pipe.hdel(key_notify, notify_props['id'])
+					if 'cursor_created' in notify_props:
+						pipe.set(key_lastpub_created, notify_props['cursor_created'])
+					if 'cursor_modified' in notify_props:
+						pipe.set(key_lastpub_modified, notify_props['cursor_modified'])
+					pipe.execute()
+					break
+				except redis.WatchError:
+					continue
+
+		item = self._item_from_structured(notify_props['item'])
+
+		if 'cursor_created' in notify_props:
+			self.notify(enc_base + '-created', item, None, notify_props['cursor_created'], lastpub_created)
+		if 'cursor_modified' in notify_props:
+			self.notify(enc_base + '-modified', item, None, notify_props['cursor_modified'], lastpub_modified)
 
 	def get_items(self, feed_id, since_spec, until_spec, max_count):
 		parts = feed_id.split('-')
@@ -604,16 +688,16 @@ class RedisModel(Model):
 		key_items = '%s%s-items' % (self.prefix, enc_base)
 		key_index_created = '%s%s-index-created' % (self.prefix, enc_base)
 		key_index_modified = '%s%s-index-modified' % (self.prefix, enc_base)
-		key_lastpub_created = '%s%s-lastpub-created' % (self.prefix, enc_base)
-		key_lastpub_modified = '%s%s-lastpub-modified' % (self.prefix, enc_base)
+		key_notify = '%s%s-notify' % (self.prefix, enc_base)
+		key_notify_items = '%s%s-notify-items' % (self.prefix, enc_base)
 		while True:
 			with self.redis.pipeline() as pipe:
 				try:
 					pipe.watch(key_items)
 					pipe.watch(key_index_created)
 					pipe.watch(key_index_modified)
-					pipe.watch(key_lastpub_created)
-					pipe.watch(key_lastpub_modified)
+					pipe.watch(key_notify)
+					pipe.watch(key_notify_items)
 
 					now = datetime.utcnow()
 
@@ -654,8 +738,10 @@ class RedisModel(Model):
 					item.data = data
 
 					if notify:
-						lastpub_created = pipe.get(key_lastpub_created)
-						lastpub_modified = pipe.get(key_lastpub_modified)
+						notify_props = dict()
+						notify_props['id'] = str(uuid.uuid4())
+						notify_props['created'] = calendar.timegm(now.utctimetuple())
+						notify_props['state'] = 'initializing'
 
 					ts_created = calendar.timegm(item.created.utctimetuple())
 					ts_modified = calendar.timegm(item.modified.utctimetuple())
@@ -667,6 +753,9 @@ class RedisModel(Model):
 					pipe.zadd(key_index_modified, item.id, ts_modified)
 					pipe.zrangebyscore(key_index_created, ts_created, ts_created)
 					pipe.zrangebyscore(key_index_modified, ts_modified, ts_modified)
+					if notify:
+						pipe.rpush(key_notify, notify_props['id'])
+						pipe.hset(key_notify_items, notify_props['id'], json.dumps(notify_props))
 					ret = pipe.execute()
 					items_created = ret[3]
 					items_modified = ret[4]
@@ -675,19 +764,16 @@ class RedisModel(Model):
 					continue
 
 		if notify:
-			created_offset = items_created.index(item.id)
-			modified_offset = items_modified.index(item.id)
-			lastcursor_created = make_toc_cursor(ts_created, created_offset, items_created[0:created_offset + 1])
-			lastcursor_modified = make_toc_cursor(ts_modified, modified_offset, items_modified[0:modified_offset + 1])
-
-			# FIXME: race condition. another write could set this before we do
-			self.redis.set(key_lastpub_created, lastcursor_created)
-			self.redis.set(key_lastpub_modified, lastcursor_modified)
-
+			notify_props['state'] = 'pending'
+			notify_props['item'] = self._item_to_structured(item)
 			if notify_created:
-				self.notify(enc_base + '-created', item, None, lastcursor_created, lastpub_created)
+				created_offset = items_created.index(item.id)
+				notify_props['cursor_created'] = make_toc_cursor(ts_created, created_offset, items_created[0:created_offset + 1])
 			if notify_modified:
-				self.notify(enc_base + '-modified', item, None, lastcursor_modified, lastpub_modified)
+				modified_offset = items_modified.index(item.id)
+				notify_props['cursor_modified'] = make_toc_cursor(ts_modified, modified_offset, items_modified[0:modified_offset + 1])
+			self._rewrite_notify_props(base, notify_props)
+			self._process_notify(base)
 
 		return item
 
@@ -696,14 +782,16 @@ class RedisModel(Model):
 		key_items = '%s%s-items' % (self.prefix, enc_base)
 		key_index_modified = '%s%s-index-modified' % (self.prefix, enc_base)
 		key_index_deleted = '%s%s-index-deleted' % (self.prefix, enc_base)
-		key_lastpub_modified = '%s%s-lastpub-modified' % (self.prefix, enc_base)
+		key_notify = '%s%s-notify' % (self.prefix, enc_base)
+		key_notify_items = '%s%s-notify-items' % (self.prefix, enc_base)
 		while True:
 			with self.redis.pipeline() as pipe:
 				try:
 					pipe.watch(key_items)
 					pipe.watch(key_index_modified)
 					pipe.watch(key_index_deleted)
-					pipe.watch(key_lastpub_modified)
+					pipe.watch(key_notify)
+					pipe.watch(key_notify_items)
 
 					now = datetime.utcnow()
 
@@ -723,7 +811,10 @@ class RedisModel(Model):
 					item.modified = now
 
 					if notify:
-						lastpub_modified = pipe.get(key_lastpub_modified)
+						notify_props = dict()
+						notify_props['id'] = str(uuid.uuid4())
+						notify_props['created'] = calendar.timegm(now.utctimetuple())
+						notify_props['state'] = 'initializing'
 
 					ts_modified = calendar.timegm(item.modified.utctimetuple())
 
@@ -733,6 +824,9 @@ class RedisModel(Model):
 					pipe.zadd(key_index_modified, item.id, ts_modified)
 					pipe.zadd(key_index_deleted, item.id, ts_modified)
 					pipe.zrangebyscore(key_index_modified, ts_modified, ts_modified)
+					if notify:
+						pipe.rpush(key_notify, notify_props['id'])
+						pipe.hset(key_notify_items, notify_props['id'], json.dumps(notify_props))
 					ret = pipe.execute()
 					items_modified = ret[3]
 					break
@@ -740,13 +834,12 @@ class RedisModel(Model):
 					continue
 
 		if notify:
+			notify_props['state'] = 'pending'
+			notify_props['item'] = self._item_to_structured(item)
 			modified_offset = items_modified.index(item.id)
-			lastcursor_modified = make_toc_cursor(ts_modified, modified_offset, items_modified[0:modified_offset + 1])
-
-			# FIXME: race condition. another write could set this before we do
-			self.redis.set(key_lastpub_modified, lastcursor_modified)
-
-			self.notify(enc_base + '-modified', item, None, lastcursor_modified, lastpub_modified)
+			notify_props['cursor_modified'] = make_toc_cursor(ts_modified, modified_offset, items_modified[0:modified_offset + 1])
+			self._rewrite_notify_props(base, notify_props)
+			self._process_notify(base)
 
 	# ttl is in seconds
 	# return total cleared
