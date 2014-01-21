@@ -489,7 +489,7 @@ class RedisModel(Model):
 
 					pipe.multi()
 					pipe.lpop(key_notify)
-					pipe.hdel(key_notify, notify_props['id'])
+					pipe.hdel(key_notify_items, notify_props['id'])
 					if 'cursor_created' in notify_props:
 						pipe.set(key_lastpub_created, notify_props['cursor_created'])
 					if 'cursor_modified' in notify_props:
