@@ -80,7 +80,7 @@ def items(req, **kwargs):
 			return HttpResponseNotFound('Not Found: %s\n' % e.message)
 
 		if not wait or result.last_cursor is None or not since or len(result.items) > 0:
-			content_type, body = smartfeed.create_items_body(rformat, result.items, total=result.total, last_cursor=result.last_cursor, formatter=mapper.get_formatter())
+			content_type, body = smartfeed.create_items_body(rformat, result.items, total=result.total, last_cursor=result.last_cursor, formatter=mapper.get_formatter(req, kwargs))
 			return HttpResponse(body, content_type=content_type)
 
 		if not smartfeed.django.check_grip_sig(req):
