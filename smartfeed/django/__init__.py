@@ -38,6 +38,14 @@ class Mapper(object):
 	def get_feed_id(self, request, params):
 		raise NotImplementedError()
 
+	def get_formatter(self, request, params):
+		# call the global method by default
+		return get_default_formatter()
+
+	def get_grip_prefix(self, request, params):
+		# call the global method by default
+		return get_grip_prefix()
+
 class DefaultMapper(Mapper):
 	def get_feed_id(self, request, params):
 		base = params['base']

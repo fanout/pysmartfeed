@@ -38,14 +38,23 @@ def items(req, **kwargs):
 			try:
 				since = smartfeed.parse_spec(since)
 			except ValueError as e:
-				return HttpResponseBadRequest('Bad Request: Invalid since value: %s\n')
+				return HttpResponseBadRequest('Bad Request: Invalid since value: %s\n' % e.message)
 
 		until = req.GET.get('until')
 		if until:
 			try:
 				until = smartfeed.parse_spec(until)
 			except ValueError as e:
-				return HttpResponseBadRequest('Bad Request: Invalid until value: %s\n')
+				return HttpResponseBadRequest('Bad Request: Invalid until value: %s\n' % e.message)
+
+		wait = req.GET.get('wait')
+		if wait is not None:
+			if wait in ('true', 'false'):
+				wait = (wait == 'true')
+			else:
+				return HttpResponseBadRequest('Bad Request: Invalid wait value\n')
+		else:
+			wait = False
 
 		rformat = 'json'
 		accept = req.META.get('HTTP_ACCEPT')
@@ -70,14 +79,16 @@ def items(req, **kwargs):
 		except smartfeed.ItemDoesNotExist as e:
 			return HttpResponseNotFound('Not Found: %s\n' % e.message)
 
-		if result.last_cursor is None or not since or len(result.items) > 0:
-			content_type, body = smartfeed.create_items_body(rformat, result.items, total=result.total, last_cursor=result.last_cursor, formatter=smartfeed.django.get_default_formatter())
+		if not wait or result.last_cursor is None or not since or len(result.items) > 0:
+			content_type, body = smartfeed.create_items_body(rformat, result.items, total=result.total, last_cursor=result.last_cursor, formatter=mapper.get_formatter())
 			return HttpResponse(body, content_type=content_type)
 
 		if not smartfeed.django.check_grip_sig(req):
 			return HttpResponse('Error: Realtime endpoint not supported. Set up Pushpin or Fanout.io\n', status=501)
 
-		channel = gripcontrol.Channel(smartfeed.django.get_grip_prefix() + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(rformat), result.last_cursor)
+		grip_prefix = mapper.get_grip_prefix(req, kwargs)
+
+		channel = gripcontrol.Channel(grip_prefix + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(rformat), result.last_cursor)
 		theaders = dict()
 		content_type, tbody = smartfeed.create_items_body(rformat, [], last_cursor=result.last_cursor)
 		theaders['Content-Type'] = content_type
@@ -108,7 +119,9 @@ def stream(req, **kwargs):
 		if not smartfeed.django.check_grip_sig(req):
 			return HttpResponse('Error: Realtime endpoint not supported. Set up Pushpin or Fanout.io\n', status=501)
 
-		channel = gripcontrol.Channel(smartfeed.django.get_grip_prefix() + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(rformat))
+		grip_prefix = mapper.get_grip_prefix(req, kwargs)
+
+		channel = gripcontrol.Channel(grip_prefix + smartfeed.encode_id_part(feed_id) + '-' + smartfeed.encode_id_part(rformat))
 		iheaders = dict()
 		iheaders['Content-Type'] = 'text/plain'
 		iresponse = gripcontrol.Response(headers=iheaders)
