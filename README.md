@@ -242,7 +242,8 @@ Here is a list of the various Django settings. Almost all are optional.
   * `REDIS_HOST` - The Redis host to use. Defaults to localhost.
   * `REDIS_PORT` - The Redis port to use. Defaults to 6379.
   * `REDIS_DB` - The Redis DB number to use. Defaults to 0.
-  * `GRIP_PROXES` - List of GRIP proxies to use for client-initiated realtime push. If omitted, then long-polling/streaming will be disabled.
+  * `GRIP_PROXIES` - List of GRIP proxies to use for client-initiated realtime push. If omitted, then long-polling/streaming will be disabled.
+  * `PUBLISH_SERVERS` - List of EPCP servers to publish to.
   * `SMARTFEED_MODEL_CLASS` - The default SmartFeed model class to use. Set this to `smartfeed.django.RedisModel`.
   * `SMARTFEED_MAPPER_CLASS` - The default mapper class to use. Defaults to `smartfeed.django.DefaultMapper`.
   * `SMARTFEED_FORMATTER_CLASS` - The default formatter class to use. Defaults to `smartfeed.DefaultFormatter`.
