@@ -1,10 +1,8 @@
 PySmartFeed
 ===========
-Date: January 5th, 2014
 
-Author: Justin Karneges <justin@fanout.io>
-
-Mailing List: http://lists.fanout.io/listinfo.cgi/fanout-users-fanout.io
+Author: Justin Karneges <justin@fanout.io>  
+Mailing List: http://lists.fanout.io/mailman/listinfo/fanout-users
 
 PySmartFeed is a Python library for implementing Smart Feeds, a protocol that simplifies synchronization of item lists in realtime. Smart Feeds are very similar to RSS/Atom feeds, with support for multiple transport protocols (HTTP and XMPP) as well as a variety of mechanisms for receiving updates (HTTP long-polling, PubSubHubbub, XMPP). For more information about Smart Feeds, see the spec: https://fanout.io/docs/smartfeeds.html
 
